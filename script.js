@@ -1,12 +1,12 @@
 import renderChunkInstances from "./modules/renderChunkInstances.js";
 
 // Set the size of the world in chunks
-var worldSize = 20;
-var worldSizeY = 3;
+var worldSize = 32;
+var worldSizeY = 10;
 // Set the size of each chunk in blocks
 var chunkSize = 16;
 // Set the render distance in chunks
-var renderDistance = 12;
+var renderDistance = 15;
 // Set the size of each voxel
 var voxelSize = 1;
 // Initialize Simplex noise generator
@@ -57,6 +57,28 @@ var materials = {
 materials["dirt"].diffuseColor = new BABYLON.Color3(0.5, 0.3, 0.1);
 materials["grass"].diffuseColor = new BABYLON.Color3(0.1, 0.5, 0.1);
 materials["stone"].diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+//
+
+let voxelMaterialGeometry = [];
+
+for (let key in materials) {
+  if (materials.hasOwnProperty(key)) {
+    let material = materials[key];
+
+    // Create voxel geometry
+    let voxelGeometry = BABYLON.MeshBuilder.CreateBox(
+      "voxelGeometry",
+      { size: 1 },
+      scene
+    );
+    voxelGeometry.material = material;
+
+    voxelGeometry.isVisible = false;
+    voxelMaterialGeometry[key] = voxelGeometry
+  }
+}
+
+
 
 // Loop through each chunk in the world
 for (let cx = 0; cx < worldSize; cx++) {
@@ -70,15 +92,9 @@ for (let cx = 0; cx < worldSize; cx++) {
 
       for (let key in materials) {
         if (materials.hasOwnProperty(key)) {
-          let material = materials[key];
 
           // Create voxel geometry
-          let voxelGeometry = BABYLON.MeshBuilder.CreateBox(
-            "voxelGeometry",
-            { size: 1 },
-            scene
-          );
-          voxelGeometry.material = material;
+          let voxelGeometry = voxelMaterialGeometry[key]
           // Create voxel instances
           let voxelInstances = new BABYLON.InstancedMesh(
             "voxelInstances",
@@ -88,6 +104,8 @@ for (let cx = 0; cx < worldSize; cx++) {
             true
           );
 
+          voxelInstances.isVisible = false;
+          voxelGeometry.isVisible = false;
           voxelMaterialInstances[key] = {
             geometry: voxelGeometry,
             instances: voxelInstances,
@@ -145,8 +163,8 @@ function getChunkForPosition(position) {
 }
 
 const unloadChunk = (chunk) => {
-  for (let key in materials) {
-    if (materials.hasOwnProperty(key)) {
+  for (let key in chunk.instances) {
+    if (chunk.instances.hasOwnProperty(key)) {
       chunk.instances[key].instances.dispose();
     }
   }
@@ -156,6 +174,54 @@ const loadedChunks = new Array(worldSize)
   .map(() =>
     new Array(worldSizeY).fill().map(() => new Array(worldSize).fill(false))
   );
+
+function unloadInvisibleChunks(playerPosition, visibleChunks) {
+  // Create a set of visible chunk string representations
+  const visibleChunkSet = new Set(
+    visibleChunks.map(([x, y, z]) => `${x},${y},${z}`)
+  );
+
+  for (let cx = 0; cx < loadedChunks.length; cx++) {
+    for (let cy = 0; cy < loadedChunks[cx].length; cy++) {
+      for (let cz = 0; cz < loadedChunks[cx][cy].length; cz++) {
+        if (
+          loadedChunks[cx][cy][cz] &&
+          !visibleChunkSet.has(`${cx},${cy},${cz}`)
+        ) {
+          loadedChunks[cx][cy][cz] = false;
+          let chunk = getChunk(worldMatrix, cx, cy, cz);
+          if (chunk) {
+            unloadChunk(chunk);
+            return;
+          }
+        }
+      }
+    }
+  }
+}
+
+function loadVisibleChunks(playerPosition, visibleChunks) {
+  for (const [cx, cy, cz] of visibleChunks) {
+    if (!loadedChunks[cx][cy][cz]) {
+      loadedChunks[cx][cy][cz] = true;
+      let chunk = getChunk(worldMatrix, cx, cy, cz);
+      if (chunk) {
+        renderChunkInstances(
+          worldMatrix,
+          chunkSize,
+          chunk.instances,
+          voxelSize,
+          chunk.voxels,
+          cx,
+          cy,
+          cz
+        );
+      }
+      return;
+    }
+  }
+}
+
 function updateVisibleChunks(playerPosition) {
   // Compute the player's chunk coordinates
   let playerChunk = getChunkForPosition(playerPosition);
@@ -181,61 +247,31 @@ function updateVisibleChunks(playerPosition) {
       }
     }
   }
-
-  // Loop through all the loaded chunks and unload the ones that are no longer visible
-  loadedChunks.forEach(function (rows, cx) {
-    rows.forEach(function (cols, cy) {
-      cols.forEach(function (loaded, cz) {
-        if (
-          loaded &&
-          !visibleChunks.some(([x, y, z]) => x === cx && y === cy && z === cz)
-        ) {
-          loadedChunks[cx][cy][cz] = false;
-          let chunk = getChunk(worldMatrix, cx, cy, cz);
-          if (chunk) {
-            unloadChunk(chunk);
-          }
-        }
-      });
-    });
-  });
-
-  // Loop through all the visible chunks and load the ones that are not yet loaded
-  visibleChunks.forEach(function ([cx, cy, cz]) {
-    if (!loadedChunks[cx][cy][cz]) {
-      loadedChunks[cx][cy][cz] = true;
-      let chunk = getChunk(worldMatrix, cx, cy, cz);
-      if (chunk) {
-        renderChunkInstances(
-          worldMatrix,
-          chunkSize,
-          chunk.instances,
-          voxelSize,
-          chunk.voxels,
-          cx,
-          cy,
-          cz
-        );
-      }
-    }
-  });
+  for (let i = 1; i < 3; i++) {
+    unloadInvisibleChunks(playerPosition, visibleChunks);
+    loadVisibleChunks(playerPosition, visibleChunks);
+  }
 }
 
 let lastUpdate = 0;
 
 function update() {
   const now = performance.now();
-  if (now - lastUpdate >= 1000) {
+  if (now - lastUpdate >= 60) {
     lastUpdate = now;
     const playerPosition = camera.position;
+
     updateVisibleChunks(playerPosition);
   }
+
+  requestAnimationFrame(update);
 }
+
+update(); // Initial call to start the update loop
 
 // Run the update loop every frame
 engine.runRenderLoop(function () {
   scene.render();
-  update();
 });
 
 // Resize the canvas when the window is resized
